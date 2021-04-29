@@ -5,6 +5,7 @@
  */
 void can_init();
 uint8_t mcp2515_read(uint8_t addr);
+void mcp2515_write(uint8_t addr, uint8_t data);
 
 /*
  * Pinning
@@ -77,4 +78,18 @@ uint8_t mcp2515_read(uint8_t addr) {
   
   // Return
   return value;
+}
+
+/* ******************************************* */
+void mcp2515_write(uint8_t addr, uint8_t data) {
+
+  uint8_t tx_buf[3];
+  tx_buf[0] = 0x02;
+  tx_buf[1] = addr;
+  tx_buf[2] = data;
+  
+  digitalWrite(SPI_CS, LOW);
+  SPI.transfer(tx_buf, 3);
+  digitalWrite(SPI_CS, HIGH);
+
 }
