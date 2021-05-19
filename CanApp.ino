@@ -1,13 +1,22 @@
 #include <SPI.h>
+#include "mcp2515_regs.h"
+
+
 
 /* 
  * function prototypes
  */
+
+/*
+ * CAN function prototypes
+ */
 void can_init();
+uint8_t can_tx_extended_data_frame(uint32_t id, uint8_t *data);
 
 /*
  * mcp2515 function prototypes
  */
+void mcp2515_init(void);
 uint8_t mcp2515_read_register(uint8_t addr);
 void mcp2515_read_rx_buffer(uint8_t buffer_id, uint8_t *data, uint8_t len);
 void mcp2515_write_register(uint8_t addr, uint8_t data);
@@ -21,39 +30,33 @@ void mcp2515_bit_modify(uint8_t addr, uint8_t mask, uint8_t data);
  */
 #define SPI_CS 10
 
-/* MCP2515 constants */
-#define CAN_RESET       0xC0
-#define CAN_READ        0x03
-#define CAN_WRITE       0x02
-#define CAN_RTS         0x80
-#define CAN_RTS_TXB0    0x81
-#define CAN_RTS_TXB1    0x82
-#define CAN_RTS_TXB2    0x84
-#define CAN_RD_STATUS   0xA0
-#define CAN_BIT_MODIFY  0x05  
-#define CAN_RX_STATUS   0xB0
-#define CAN_RD_RX_BUFF  0x90
-#define CAN_LOAD_TX     0X40 
-
-#define DEBUG
-      
-#ifdef DEBUG
+/*
+ * Global var's
+ */
 char debug_buf[64];
-#endif
 
 // Setup runs one time
 void setup() {
-  
-  // Serial port
   Serial.begin(115200);
-  
-  // CAN shield
   can_init();
 }
 
+// Loop forever
+void loop() {
+  // put your main code here, to run repeatedly:
+  delay(100);
+}
+
+
+/*
+ * 
+ * CAN init, RX and TX functions
+ * 
+ */
+
 
 /* ************************************************************** */
-void can_init()
+void can_init(void)
 /* 
 short  :         
 inputs  :        
@@ -62,35 +65,175 @@ notes :
 Version : DMK, Initial code
 ***************************************************************** */
 {
-  // Setu[ SPI
+  Serial.print(">> can_init\n");
+
+  // Setup SPI
   pinMode(SPI_CS, OUTPUT);
   digitalWrite(SPI_CS, HIGH);
   // Setup SPI: CS=#D9, MOSI=#D11, MISO=#D12, SCL=#D13
   SPI.begin();
   // Opt. slow down SPI (bij lange draadjes)
-  //SPI.setClockDivider(SPI_CLOCK_DIV64);
+  // SPI.setClockDivider(SPI_CLOCK_DIV64);
   
-  // Reset MCP2515 chip
-  mcp2515_reset();
-  delay(1000);
+  // Setup interrupt handler for mcp2515 interrupts
+  //gpio_set_irq_enabled_with_callback(21, GPIO_IRQ_EDGE_FALL, true, &mcp2515_callback);
 
-  uint8_t data = mcp2515_read_register(0x0F);
+  // Reset and init mcp2515
+  mcp2515_init();
 
-  // Formatted print Arduino style
-  char buf[64];
-  sprintf(buf, "CANCTRL: 0x%.2X\n", data);
-  Serial.print(buf);
-  
-  // Set mode (NORMAL of LOOPBACK)
+  Serial.print("<< can_init\n");
+}
+
+///**************************************************************** */
+//uint8_t can_read_msg(CAN_DATA_FRAME_STRUCT *frame) 
+///* 
+//short  :         
+//inputs  :        
+//outputs : 
+//notes :         
+//Version : DMK, Initial code
+//*******************************************************************/
+//{
+//    uint8_t buf[14];
+//   
+//    // Read queue
+//    bool done = queue_try_remove(&rx_message_queue, buf);
+//    
+//    if(done) {
+//        // Check if standard or extended id 
+//        if( buf[1] & 0x08 ) {
+//            // Extended ID
+//            uint8_t b3 = (buf[0] >> 3);  
+//            uint8_t b2 = (buf[0] << 5) | ((buf[1]&0xE0) >>3) | (buf[1]&0x03);
+//            uint8_t b1 = buf[2];
+//            uint8_t b0 = buf[3];
+//            frame->id = b3 << 24 | b2 << 16 | b1 << 8 | b0;
+//        } else {
+//            // Standard ID
+//            frame->id = (buf[1] << 3) | (buf[1] >> 5);
+//        }
+//        
+//        // Get datalenght (clip to max. 8 bytes) 
+//        frame->datalen = (buf[4]&0x0F) <= 8 ? buf[4]&0x0F : 8;
+//        
+//        // Get actual data
+//        for(uint8_t idx = 0; idx < frame->datalen; idx++) {
+//           frame->data[idx] = buf[5+idx];
+//        }
+//    }
+//    return done;
+//}
+//
+
+/**************************************************************** */
+uint8_t can_tx_extended_data_frame(uint32_t id, uint8_t *data, uint8_t nr_bytes)
+/* 
+short :         
+inputs  :        
+outputs : 
+notes :         
+Version : DMK, Initial code
+*******************************************************************/
+{
+    uint8_t err = 0, tx_buf_id;
+
+    // Find free transmitbuffer (out of 3)
+    uint8_t status = mcp2515_read_status();
+    if( !(status & 0x04) ) {
+        tx_buf_id = 0x00;
+    } else if ( !(status & 0x10) ) {
+      tx_buf_id = 0x01;
+    } else if ( !(status & 0x40) ) {
+      tx_buf_id = 0x02;
+    } else {
+      err = 1; // No free transmit slot 
+    }
+
+    /* Display empty buffer id */
+    sprintf(debug_buf,"\Free tx_buf_id: 0x%.2X\n", tx_buf_id);
+    Serial.print(debug_buf);
+
+    // If free transmitterbuffer  
+    if( 0 == err ) {
+    
+        // Temp transmitbuffer and make sure lenght <= 8
+        uint8_t buf[14];
+        uint8_t datalen = nr_bytes <= 8 ? nr_bytes : 8;
+
+        // Construct buffer content for extended id
+        buf[0] = (uint8_t) ((id << 3) >> 24) ;    // TXBnSIDH
+        buf[1] = (uint8_t) ((((id << 3) | (id & 0x00030000)) >> 16) | EXIDE); // TXBnSIDL
+        buf[2] = id >> 8; // TXBnEID8      
+        buf[3] = id;      // TXBnEID0
+        buf[4] = datalen; // TXBnDLC and RTR bit clear
+    
+        // TBnDm registers
+        for(uint8_t idx = 0; idx < datalen; idx++) {
+            buf[5+idx] = data[idx];
+        }
+    
+        // Write to CAN controller
+        mcp2515_load_tx_buffer(tx_buf_id, buf, 13);
+    
+        // ... and request transmit
+        mcp2515_RTS(tx_buf_id);
+    }
+
+    return err;
 }
 
 
-// Loop forever
-void loop() {
-  // put your main code here, to run repeatedly:
-  delay(100);
+/* ************************************************************** */
+void mcp2515_init() 
+/* 
+short  :         
+inputs  :        
+outputs : 
+notes :         
+Version : DMK, Initial code
+***************************************************************** */
+{
+  
+    // Reset CAN controller
+    mcp2515_reset();
+    delay(100);
 
+    // Clear masks RX messages
+    mcp2515_write_register(RXM0SIDH, 0x00);
+    mcp2515_write_register(RXM0SIDL, 0x00);
+    mcp2515_write_register(RXM0EID8, 0x00);
+    mcp2515_write_register(RXM0EID0, 0x00);
+
+    // Clear filter and EXIDE bit
+    mcp2515_write_register(RXF0SIDL, 0x00);
+
+    // Set CNF1 (250kbps) Berekent met de Microchip calculator
+    mcp2515_write_register(CNF1, 0x00); // 0x00
+  
+    // Set CNF2 (
+    mcp2515_write_register(CNF2, 0xB1); // 0xB1
+  
+    // Set CNF3 (
+    mcp2515_write_register(CNF3, 0x85); // 0x85
+
+    // Interrupts on rx buffers and errors
+    //mcp2515_write_register(CANINTE, MERRE | ERRIE | RX1IE | RX0IE); 
+    mcp2515_write_register(CANINTE, 0x00); 
+
+    // Set NORMAL mode (or LOOPBACK for development)
+    //uint8_t mode = REQOP_LOOPBACK; 
+    uint8_t mode = REQOP_NORMAL;
+
+    mcp2515_write_register(CANCTRL, mode);
+
+    // Verify mode
+    uint8_t dummy = mcp2515_read_register(CANSTAT);
+    if (mode != (dummy && 0xE0)) {
+        Serial.println("Error setting mode!");
+        mcp2515_write_register(CANCTRL, mode);
+    }
 }
+
 
 /* ************************************************************** *
  *
@@ -244,10 +387,8 @@ Version : DMK, Initial code
   
       default:
         err = 1;
-        #ifdef DEBUG
-          sprintf(debug_buf, "\Invalid tx_buf_id: 0x%.2X\n", tx_buf_id);
-          Serial.print(debug_buf);
-        #endif
+        sprintf(debug_buf, "\Invalid tx_buf_id: 0x%.2X\n", tx_buf_id);
+        Serial.print(debug_buf);
     }
 
     if(!err) {
