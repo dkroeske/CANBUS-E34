@@ -63,37 +63,51 @@ void setup() {
   sprintf(debug_buf, "RX STATUS: 0x%.2X\n", status);
   Serial.print(debug_buf);
 
-  // En uitlezen buffer ...
-  uint8_t rx_buf[14];
-  uint8_t rx_buf_length;
-  
-  can_rx_data_frame(rx_buf, &rx_buf_length);
-  // Printen van inhoud
-  Serial.print("RX_BUFFER: ");
-  for(uint8_t idx = 0; idx < rx_buf_length; idx++ ) {
-    sprintf(debug_buf, "0x%.2X ", rx_buf[idx]);
-    Serial.print(debug_buf);
-  }
-  Serial.println("");
- 
-}
-
-// Loop forever
-void loop() {
-
 //  // En uitlezen buffer ...
 //  uint8_t rx_buf[14];
 //  uint8_t rx_buf_length;
 //  
-//  // Print RX buffer inhoud
-//  if( can_rx_data_frame(rx_buf, &rx_buf_length)) {
-//    Serial.print("RX_BUFFER: ");
-//    for(uint8_t idx = 0; idx < rx_buf_length; idx++ ) {
-//      sprintf(debug_buf, "0x%.2X ", rx_buf[idx]);
-//      Serial.print(debug_buf);
-//    }
-//    Serial.println("");
+//  can_rx_data_frame(rx_buf, &rx_buf_length);
+//  // Printen van inhoud
+//  Serial.print("RX_BUFFER: ");
+//  for(uint8_t idx = 0; idx < rx_buf_length; idx++ ) {
+//    sprintf(debug_buf, "0x%.2X ", rx_buf[idx]);
+//    Serial.print(debug_buf);
 //  }
+//  Serial.println("");
+ 
+}
+
+uint8_t teller = 0;
+
+// Loop forever
+void loop() {
+
+  // Try sending ONE frame
+  uint32_t id = 0x1010;
+  uint8_t tx_data[] = {'B', 'R', 69, 'D', 0x41};
+  tx_data[5] = teller;
+  uint8_t size = 8;
+  if( can_tx_extended_data_frame(id, tx_data, size) ) {
+    Serial.println("Error can_tx_extended_data_frame()\n");
+  }
+
+  teller++;
+  delay(200);
+
+  // En uitlezen buffer ...
+  uint8_t rx_buf[14];
+  uint8_t rx_buf_length;
+  
+  // Print RX buffer inhoud
+  if( can_rx_data_frame(rx_buf, &rx_buf_length)) {
+    Serial.print("RX_BUFFER: ");
+    for(uint8_t idx = 0; idx < rx_buf_length; idx++ ) {
+      sprintf(debug_buf, "0x%.2X ", rx_buf[idx]);
+      Serial.print(debug_buf);
+    }
+    Serial.println("");
+  }
 }
 
 
@@ -175,7 +189,7 @@ Version : DMK, Initial code
     // Find free transmitbuffer (out of 3)
     uint8_t status = mcp2515_read_status();
     if( !(status & 0x04) ) {
-        tx_buf_id = 0x00;
+      tx_buf_id = 0x00;
     } else if ( !(status & 0x10) ) {
       tx_buf_id = 0x01;
     } else if ( !(status & 0x40) ) {
@@ -185,8 +199,8 @@ Version : DMK, Initial code
     }
 
     /* Display empty buffer id */
-    sprintf(debug_buf,"\Free tx_buf_id: 0x%.2X\n", tx_buf_id);
-    Serial.print(debug_buf);
+ //   sprintf(debug_buf,"\Free tx_buf_id: 0x%.2X\n", tx_buf_id);
+ //   Serial.print(debug_buf);
 
     // If free transmitterbuffer  
     if( 0 == err ) {
