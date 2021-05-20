@@ -1,8 +1,6 @@
 #include <SPI.h>
 #include "mcp2515_regs.h"
 
-
-
 /* 
  * function prototypes
  */
@@ -11,7 +9,8 @@
  * CAN function prototypes
  */
 void can_init();
-uint8_t can_tx_extended_data_frame(uint32_t id, uint8_t *data);
+uint8_t can_tx_extended_data_frame(uint32_t id, uint8_t *data, uint8_t nr_bytes);
+uint8_t can_rx_data_frame(uint8_t *data, uint8_t *nr_bytes);
 
 /*
  * mcp2515 function prototypes
@@ -22,8 +21,10 @@ void mcp2515_read_rx_buffer(uint8_t buffer_id, uint8_t *data, uint8_t len);
 void mcp2515_write_register(uint8_t addr, uint8_t data);
 void mcp2515_load_tx_buffer(uint8_t buffer_id, uint8_t *data, uint8_t len);
 void mcp2515_RTS(uint8_t tx_buf_id);
-uint8_t mcp2515_read_status(void);
 void mcp2515_bit_modify(uint8_t addr, uint8_t mask, uint8_t data);
+uint8_t mcp2515_read_status(void);
+uint8_t mcp2515_rx_status(void);
+
 
 /*
  * I/O Pinning
@@ -39,12 +40,60 @@ char debug_buf[64];
 void setup() {
   Serial.begin(115200);
   can_init();
+
+  delay(1000);
+
+  // Test recieve buffer status
+  uint8_t status = mcp2515_rx_status();
+  sprintf(debug_buf, "RX STATUS: 0x%.2X\n", status);
+  Serial.print(debug_buf);
+
+  // Try sending ONE frame
+  uint32_t id = 0x1010;
+  uint8_t tx_data[] = {'B', 'R', 69, 'D', 0x41};
+  uint8_t size = 5;
+  if( can_tx_extended_data_frame(id, tx_data, size) ) {
+    Serial.println("Error can_tx_extended_data_frame()\n");
+  }
+
+  delay(1000);
+
+  // Test rx buffers again
+  status = mcp2515_rx_status();
+  sprintf(debug_buf, "RX STATUS: 0x%.2X\n", status);
+  Serial.print(debug_buf);
+
+  // En uitlezen buffer ...
+  uint8_t rx_buf[14];
+  uint8_t rx_buf_length;
+  
+  can_rx_data_frame(rx_buf, &rx_buf_length);
+  // Printen van inhoud
+  Serial.print("RX_BUFFER: ");
+  for(uint8_t idx = 0; idx < rx_buf_length; idx++ ) {
+    sprintf(debug_buf, "0x%.2X ", rx_buf[idx]);
+    Serial.print(debug_buf);
+  }
+  Serial.println("");
+ 
 }
 
 // Loop forever
 void loop() {
-  // put your main code here, to run repeatedly:
-  delay(100);
+
+//  // En uitlezen buffer ...
+//  uint8_t rx_buf[14];
+//  uint8_t rx_buf_length;
+//  
+//  // Print RX buffer inhoud
+//  if( can_rx_data_frame(rx_buf, &rx_buf_length)) {
+//    Serial.print("RX_BUFFER: ");
+//    for(uint8_t idx = 0; idx < rx_buf_length; idx++ ) {
+//      sprintf(debug_buf, "0x%.2X ", rx_buf[idx]);
+//      Serial.print(debug_buf);
+//    }
+//    Serial.println("");
+//  }
 }
 
 
@@ -65,65 +114,51 @@ notes :
 Version : DMK, Initial code
 ***************************************************************** */
 {
-  Serial.print(">> can_init\n");
-
   // Setup SPI
   pinMode(SPI_CS, OUTPUT);
   digitalWrite(SPI_CS, HIGH);
   // Setup SPI: CS=#D9, MOSI=#D11, MISO=#D12, SCL=#D13
   SPI.begin();
-  // Opt. slow down SPI (bij lange draadjes)
-  // SPI.setClockDivider(SPI_CLOCK_DIV64);
+  // Opt. slow down SPI (bij bijvoorbeeld lange draadjes op een protoboard)
+  SPI.setClockDivider(SPI_CLOCK_DIV64);
   
   // Setup interrupt handler for mcp2515 interrupts
   //gpio_set_irq_enabled_with_callback(21, GPIO_IRQ_EDGE_FALL, true, &mcp2515_callback);
 
   // Reset and init mcp2515
   mcp2515_init();
-
-  Serial.print("<< can_init\n");
 }
 
-///**************************************************************** */
-//uint8_t can_read_msg(CAN_DATA_FRAME_STRUCT *frame) 
-///* 
-//short  :         
-//inputs  :        
-//outputs : 
-//notes :         
-//Version : DMK, Initial code
-//*******************************************************************/
-//{
-//    uint8_t buf[14];
-//   
-//    // Read queue
-//    bool done = queue_try_remove(&rx_message_queue, buf);
-//    
-//    if(done) {
-//        // Check if standard or extended id 
-//        if( buf[1] & 0x08 ) {
-//            // Extended ID
-//            uint8_t b3 = (buf[0] >> 3);  
-//            uint8_t b2 = (buf[0] << 5) | ((buf[1]&0xE0) >>3) | (buf[1]&0x03);
-//            uint8_t b1 = buf[2];
-//            uint8_t b0 = buf[3];
-//            frame->id = b3 << 24 | b2 << 16 | b1 << 8 | b0;
-//        } else {
-//            // Standard ID
-//            frame->id = (buf[1] << 3) | (buf[1] >> 5);
-//        }
-//        
-//        // Get datalenght (clip to max. 8 bytes) 
-//        frame->datalen = (buf[4]&0x0F) <= 8 ? buf[4]&0x0F : 8;
-//        
-//        // Get actual data
-//        for(uint8_t idx = 0; idx < frame->datalen; idx++) {
-//           frame->data[idx] = buf[5+idx];
-//        }
-//    }
-//    return done;
-//}
-//
+/**************************************************************** */
+uint8_t can_rx_data_frame(uint8_t *data, uint8_t *nr_bytes) 
+/* 
+short  :         
+inputs  :        
+outputs : 
+notes :      
+Version : DMK, Initial code
+*******************************************************************/
+{
+  bool canFrameAvailable = false;
+
+  // Check of er een bericht klaar staat in RX buffer 0 (of 1)
+  uint8_t status = mcp2515_rx_status();
+  
+  if( (status & 0xC0) == 0x40 ) {
+    mcp2515_read_rx_buffer(0, data, 14);    
+    *nr_bytes = 14;
+    canFrameAvailable = true;
+  }
+
+  if( (status & 0xC0) == 0x80 ) {
+    mcp2515_read_rx_buffer(1, data, 14);    
+    *nr_bytes = 14;
+    canFrameAvailable = true;
+  }
+
+  return canFrameAvailable;
+}
+
 
 /**************************************************************** */
 uint8_t can_tx_extended_data_frame(uint32_t id, uint8_t *data, uint8_t nr_bytes)
@@ -193,7 +228,6 @@ notes :
 Version : DMK, Initial code
 ***************************************************************** */
 {
-  
     // Reset CAN controller
     mcp2515_reset();
     delay(100);
@@ -207,14 +241,14 @@ Version : DMK, Initial code
     // Clear filter and EXIDE bit
     mcp2515_write_register(RXF0SIDL, 0x00);
 
-    // Set CNF1 (250kbps) Berekent met de Microchip calculator
-    mcp2515_write_register(CNF1, 0x00); // 0x00
+    // Set CNF1 (250kbps) Berekent met de Microchip calculator, xtal = 16MHz!
+    mcp2515_write_register(CNF1, 0x41);
   
     // Set CNF2 (
-    mcp2515_write_register(CNF2, 0xB1); // 0xB1
+    mcp2515_write_register(CNF2, 0xE5);
   
     // Set CNF3 (
-    mcp2515_write_register(CNF3, 0x85); // 0x85
+    mcp2515_write_register(CNF3, 0x83);
 
     // Interrupts on rx buffers and errors
     //mcp2515_write_register(CANINTE, MERRE | ERRIE | RX1IE | RX0IE); 
@@ -225,15 +259,15 @@ Version : DMK, Initial code
     uint8_t mode = REQOP_NORMAL;
 
     mcp2515_write_register(CANCTRL, mode);
+    delay(100);
 
     // Verify mode
     uint8_t dummy = mcp2515_read_register(CANSTAT);
-    if (mode != (dummy && 0xE0)) {
+    if (mode != (dummy & 0xE0)) {
         Serial.println("Error setting mode!");
         mcp2515_write_register(CANCTRL, mode);
     }
 }
-
 
 /* ************************************************************** *
  *
@@ -398,6 +432,28 @@ Version : DMK, Initial code
     }
 }
 
+/* ************************************************************** */
+void mcp2515_bit_modify(uint8_t addr, uint8_t mask, uint8_t data)
+/* 
+short :         
+inputs  :        
+outputs : 
+notes :         
+Version : DMK, Initial code
+***************************************************************** */
+{
+    uint8_t buf[4];
+    buf[0] = CAN_BIT_MODIFY;
+    buf[1] = addr;
+    buf[2] = mask;
+    buf[2] = data;
+
+    digitalWrite(SPI_CS, LOW);
+    SPI.transfer(buf, 4);
+    digitalWrite(SPI_CS, HIGH);
+}
+
+
 
 /* ************************************************************** */
 uint8_t mcp2515_read_status(void)
@@ -425,10 +481,8 @@ Version : DMK, Initial code
 }
 
 
-
-
 /* ************************************************************** */
-void mcp2515_bit_modify(uint8_t addr, uint8_t mask, uint8_t data)
+uint8_t mcp2515_rx_status(void)
 /* 
 short :         
 inputs  :        
@@ -437,13 +491,17 @@ notes :
 Version : DMK, Initial code
 ***************************************************************** */
 {
-    uint8_t buf[4];
-    buf[0] = CAN_BIT_MODIFY;
-    buf[1] = addr;
-    buf[2] = mask;
-    buf[2] = data;
 
+    uint8_t txbuf[3];
+    txbuf[0] = CAN_RX_STATUS;
+    txbuf[1] = 0x00;
+    txbuf[2] = 0x00;
+    uint8_t rxbuf[2];
+  
     digitalWrite(SPI_CS, LOW);
-    SPI.transfer(buf, 4);
+    SPI.transfer(txbuf, 3);
+    SPI.transfer(rxbuf, 2);
     digitalWrite(SPI_CS, HIGH);
+   
+    return rxbuf[0];
 }
