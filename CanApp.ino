@@ -435,7 +435,7 @@ Version : DMK, Initial code
   
       default:
         err = 1;
-        sprintf(debug_buf, "\Invalid tx_buf_id: 0x%.2X\n", tx_buf_id);
+        sprintf(debug_buf, "Invalid tx_buf_id: 0x%.2X\n", tx_buf_id);
         Serial.print(debug_buf);
     }
 
